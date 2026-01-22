@@ -218,19 +218,9 @@ function App() {
             <button onClick={() => setAuthMode('email')} className={`flex-1 py-2 rounded-lg ${authMode === 'email' ? 'bg-blue-600 text-white' : 'bg-gray-100'}`}>Email</button>
           </div>
 
-         {authMode === 'google' ? (
-  <div className="text-center">
-    <GoogleLogin 
-      onSuccess={handleGoogleLogin} 
-      onError={() => alert('Login failed')}
-      useOneTap={false}
-      theme="filled_blue"
-      size="large"
-      text="signin_with"
-      shape="rectangular"
-    />
-  </div>
-) : (
+          {authMode === 'google' ? (
+            <GoogleLogin onSuccess={handleGoogleLogin} onError={() => alert('Login failed')} />
+          ) : (
             <>
               {!otpSent ? (
                 <>
