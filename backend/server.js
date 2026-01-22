@@ -71,6 +71,7 @@ const auth = async (req, res, next) => {
     if (!req.user || req.user.status === 'blocked') return res.status(401).json({ error: 'Unauthorized' });
     next();
   } catch (err) {
+    console.error('Auth error:', err.message);
     res.status(401).json({ error: 'Invalid token' });
   }
 };
@@ -83,21 +84,64 @@ const adminAuth = (req, res, next) => {
 // Routes
 app.post('/api/auth/google', async (req, res) => {
   try {
+    console.log('🔵 Google login attempt');
+    console.log('Token received:', req.body.token ? 'Yes' : 'No');
+    console.log('Google Client ID set:', process.env.GOOGLE_CLIENT_ID ? 'Yes' : 'No');
+    console.log('JWT Secret set:', process.env.JWT_SECRET ? 'Yes' : 'No');
+    
+    if (!req.body.token) {
+      return res.status(400).json({ error: 'No token provided' });
+    }
+
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      console.error('❌ GOOGLE_CLIENT_ID not set');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    if (!process.env.JWT_SECRET) {
+      console.error('❌ JWT_SECRET not set');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    console.log('Verifying Google token...');
     const ticket = await googleClient.verifyIdToken({
       idToken: req.body.token,
       audience: process.env.GOOGLE_CLIENT_ID
     });
+    
     const { sub, email, name } = ticket.getPayload();
+    console.log('✓ Google token verified for:', email);
     
     let user = await User.findOne({ $or: [{ googleId: sub }, { email }] });
     if (!user) {
+      console.log('Creating new user:', email);
       user = await User.create({ googleId: sub, email, name });
+    } else {
+      console.log('Existing user found:', email);
     }
     
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, role: user.role, isPremium: user.isPremium } });
+    console.log('✓ JWT token created');
+    
+    res.json({ 
+      success: true, 
+      token, 
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email, 
+        role: user.role, 
+        isPremium: user.isPremium 
+      } 
+    });
+    console.log('✓ Google login successful');
   } catch (err) {
-    res.status(500).json({ error: 'Auth failed' });
+    console.error('❌ Google auth error:', err.message);
+    console.error('Error details:', err);
+    res.status(500).json({ 
+      error: 'Authentication failed', 
+      details: err.message 
+    });
   }
 });
 
@@ -116,9 +160,13 @@ app.post('/api/auth/send-otp', async (req, res) => {
         subject: 'NoBillShit - Verification Code',
         html: `<h2>Your code: ${code}</h2><p>Valid for 10 minutes</p>`
       });
+      console.log('✓ OTP sent to:', email);
+    } else {
+      console.log('⚠️ Email not configured. OTP:', code);
     }
     res.json({ success: true });
   } catch (err) {
+    console.error('Send OTP error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP' });
   }
 });
@@ -135,30 +183,55 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     let user = await User.findOne({ email });
     if (!user) {
       user = await User.create({ email, name: email.split('@')[0] });
+      console.log('✓ New user created:', email);
     }
     
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-    res.json({ success: true, token, user: { id: user._id, name: user.name, email: user.email, role: user.role, isPremium: user.isPremium } });
+    res.json({ 
+      success: true, 
+      token, 
+      user: { 
+        id: user._id, 
+        name: user.name, 
+        email: user.email, 
+        role: user.role, 
+        isPremium: user.isPremium 
+      } 
+    });
+    console.log('✓ OTP verified for:', email);
   } catch (err) {
+    console.error('Verify OTP error:', err.message);
     res.status(500).json({ error: 'Verification failed' });
   }
 });
 
 app.get('/api/auth/me', auth, (req, res) => {
-  res.json({ success: true, user: { id: req.user._id, name: req.user.name, email: req.user.email, role: req.user.role, isPremium: req.user.isPremium } });
+  res.json({ 
+    success: true, 
+    user: { 
+      id: req.user._id, 
+      name: req.user.name, 
+      email: req.user.email, 
+      role: req.user.role, 
+      isPremium: req.user.isPremium 
+    } 
+  });
 });
 
 app.post('/api/analysis/analyze', auth, upload.single('bill'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file' });
     
+    console.log('📄 Analyzing file:', req.file.originalname);
     let textContent = '', base64Image = '';
     
     if (req.file.mimetype === 'application/pdf') {
       const data = await pdfParse(await fs.readFile(req.file.path));
       textContent = data.text;
+      console.log('✓ PDF text extracted');
     } else {
       base64Image = (await fs.readFile(req.file.path)).toString('base64');
+      console.log('✓ Image converted to base64');
     }
     
     const messages = req.file.mimetype === 'application/pdf'
@@ -168,6 +241,7 @@ app.post('/api/analysis/analyze', auth, upload.single('bill'), async (req, res) 
           { type: 'image_url', image_url: { url: `data:${req.file.mimetype};base64,${base64Image}` }}
         ]}];
     
+    console.log('🤖 Calling OpenAI...');
     const response = await openai.chat.completions.create({ model: 'gpt-4o', messages, max_tokens: 2000 });
     const content = response.choices[0].message.content;
     const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) || content.match(/({[\s\S]*})/);
@@ -188,52 +262,113 @@ app.post('/api/analysis/analyze', auth, upload.single('bill'), async (req, res) 
       issuesCount: data.potentialIssues?.length || 0
     };
     
-    await Report.create({ userId: req.user._id, fileName: req.file.originalname, analysis, totalAmount: analysis.totalAmount, potentialSavings: analysis.potentialSavings, issuesCount: analysis.issuesCount });
+    await Report.create({ 
+      userId: req.user._id, 
+      fileName: req.file.originalname, 
+      analysis, 
+      totalAmount: analysis.totalAmount, 
+      potentialSavings: analysis.potentialSavings, 
+      issuesCount: analysis.issuesCount 
+    });
+    
     req.user.analysisCount += 1;
     await req.user.save();
     await fs.unlink(req.file.path);
     
+    console.log('✓ Analysis complete for:', req.user.email);
     res.json({ success: true, analysis });
   } catch (err) {
+    console.error('❌ Analysis error:', err.message);
     if (req.file) await fs.unlink(req.file.path).catch(() => {});
-    res.status(500).json({ error: 'Analysis failed' });
+    res.status(500).json({ error: 'Analysis failed', details: err.message });
   }
 });
 
 app.get('/api/reports', auth, async (req, res) => {
-  const reports = await Report.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(50);
-  res.json({ success: true, reports });
+  try {
+    const reports = await Report.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(50);
+    res.json({ success: true, reports });
+  } catch (err) {
+    console.error('Get reports error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch reports' });
+  }
 });
 
 app.delete('/api/reports/:id', auth, async (req, res) => {
-  await Report.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
-  res.json({ success: true });
+  try {
+    await Report.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete report error:', err.message);
+    res.status(500).json({ error: 'Failed to delete' });
+  }
 });
 
 app.get('/api/admin/users', auth, adminAuth, async (req, res) => {
-  const users = await User.find().sort({ createdAt: -1 });
-  res.json({ success: true, users });
+  try {
+    const users = await User.find().sort({ createdAt: -1 });
+    res.json({ success: true, users });
+  } catch (err) {
+    console.error('Get users error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
 });
 
 app.patch('/api/admin/users/:id', auth, adminAuth, async (req, res) => {
-  const user = await User.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json({ success: true, user });
+  try {
+    const user = await User.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ success: true, user });
+  } catch (err) {
+    console.error('Update user error:', err.message);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
 });
 
 app.delete('/api/admin/users/:id', auth, adminAuth, async (req, res) => {
-  await User.findByIdAndDelete(req.params.id);
-  res.json({ success: true });
+  try {
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete user error:', err.message);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
 });
 
 app.get('/api/admin/stats', auth, adminAuth, async (req, res) => {
-  res.json({
-    totalUsers: await User.countDocuments(),
-    premiumUsers: await User.countDocuments({ isPremium: true }),
-    blockedUsers: await User.countDocuments({ status: 'blocked' }),
-    totalAnalyses: await Report.countDocuments()
+  try {
+    res.json({
+      totalUsers: await User.countDocuments(),
+      premiumUsers: await User.countDocuments({ isPremium: true }),
+      blockedUsers: await User.countDocuments({ status: 'blocked' }),
+      totalAnalyses: await Report.countDocuments()
+    });
+  } catch (err) {
+    console.error('Get stats error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    env: {
+      mongodb: process.env.MONGODB_URI ? 'Set' : 'Missing',
+      jwt: process.env.JWT_SECRET ? 'Set' : 'Missing',
+      google: process.env.GOOGLE_CLIENT_ID ? 'Set' : 'Missing',
+      openai: process.env.OPENAI_API_KEY ? 'Set' : 'Missing',
+      email: process.env.EMAIL_USER ? 'Set' : 'Missing'
+    }
   });
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.use((err, req, res, next) => {
+  console.error('💥 Server error:', err);
+  res.status(500).json({ error: 'Internal server error', details: err.message });
+});
 
-app.listen(process.env.PORT || 3001, () => console.log('✓ Server running'));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`✓ Server running on port ${PORT}`);
+  console.log('✓ Environment:', process.env.NODE_ENV || 'development');
+});
